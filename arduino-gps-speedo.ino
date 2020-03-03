@@ -1,70 +1,47 @@
 /*
-  GPS speedometer.
-  (c) 1st November 2017 A.G.Doswell  Web Page http://andydoz.blogspot.co.uk
-
-  Available to download from https://github.com/andydoswell/GPS-Speedo
+  Arduino GPS speedometer using Switec X25 stepper motor.
+  Available to download from https://github.com/iggy16/arduino-gps-speedo
 
   License: The MIT License (See full license at the bottom of this file)
-
-  The sketch uses a U-Blox 6M GPS satellite module connected to the hardware Serial interface,
-  a 128x32 SDD1306 OLED display module connected as an I2C device to pins A4 (SDA)& A5 (SCL) and a Swtech stepper motor connected to pins 4 -7. The arduino used is a Nano with 5v ATMEGA328P.
-
-  The OzOled library is not quite "right" for this application, but works, and is lightweight and fast enough. Thanks Oscar!
-  It is available here : http://blog.oscarliang.net/arduino-oled-display-library/
   TinyGPSPlus is available here :https://github.com/mikalhart/TinyGPSPlus
   Switec X25 stepper motor library is availble here: https://github.com/clearwater/SwitecX25
-
 */
+
 #include <SoftwareSerial.h>
-#include <Wire.h>
 #include <TinyGPS++.h>
-/*#include <EEPROM.h>*/
 #include <SwitecX25.h>
 
-TinyGPSPlus gps; // Feed gps data to TinySGPSPlus
-SoftwareSerial ss(2, 3);
-SwitecX25 motor1(945, 7, 5, 6, 4); // set up stepper motor, 945 steps, pins 4,5,6 & 7
+#define STEPS (315*3) // standard X25.168 range 315 degrees at 1/3 degree steps
+#define LED 13 // Satellite indicator LED
+#define MAXSPEED 120 // upper limit of speedometer (in MPH)
+#define MAXSTEP 784 // upper limit of gauge
+#define RXPIN 2
+#define TXPIN 3
+#define GPSBAUD 9600
+#define GPSDELAY 6000
 
-int MPH; // Speed in mph
-unsigned int motorPosition;
-/*int milesUnit = 0;
-  int milesTen = 0;
-  int milesHundred = 0;
-  int milesThousand = 0;
-  int milesTenThousand = 0;
-  char milesUnitA[2];
-  char milesTenA[2];
-  char milesHundredA[2];
-  char milesThousandA[2];
-  char milesTenThousandA[2];*/
-double oldLat;
-double oldLong;
-float distanceMeters;
-boolean fixFlag = false;
-const int maxSpeed = 120;
-const int maxStep = 784;
-int delayCounter = 0;
-int oldSpeed;
-int acceleration;
-long currentMotorPosition;
-long motorDifference;
-float currentDistance;
-int led = 13;
+TinyGPSPlus gps; 
+SoftwareSerial ss(RXPIN, TXPIN); // The serial connection to the GPS device
+SwitecX25 motor1(STEPS, 7, 5, 6, 4); // set up stepper motor, pins 7, 5, 6, 4
+
+int MPH; //current speed in MPH 
+int motorPosition; //current stepper motor position
+int delayCounter = 0; // slows the stepper motor to prevent jerky needle motion
+long currentMotorPosition; // the current motor position
+long motorDifference; // stores the difference of the current motor position and target motor position
 
 void setup()
 {
-  pinMode(led, OUTPUT);
+  pinMode(LED, OUTPUT);
 
-  // Set display to Normal mode
-  motor1.zero();         // zero the stepper motor
-  motor1.setPosition(maxStep); // move to the other end
-  motor1.updateBlocking();
+  motor1.zero(); // zero the stepper motor
+  motor1.setPosition(MAXSTEP); // move to the other end
+  motor1.updateBlocking(); // program waits until the update is complete
   motor1.zero(); // and back to zero
 
-  Serial.begin(115200);
-  delay(6000);  // allow the u-blox receiver to come up
-  ss.begin(9600); // start the comms with the GPS Rx
-  
+  Serial.begin(115200); // for debugging
+  delay(GPSDELAY);  // allow the u-blox receiver to come up
+  ss.begin(GPSBAUD); // start the comms with the GPS Rx  
 }
 
 void loop()
@@ -75,25 +52,39 @@ void loop()
       break;
     }
   }
-  //Serial.print("MPH: ");
    
-  if (MPH >= 3) { // if speed is more than 3 MPH, set the target position on the motor
-    motorPosition = map(MPH, 0, maxSpeed, 1, maxStep);
+  if (MPH >= 5) { // if speed is more than 3 MPH, set the target position on the motor
+    motorPosition = map(MPH, 0, MAXSPEED, 1, MAXSTEP);
     motor1.setPosition(motorPosition);
-  } else {// if the speed is ess than 3 MPH, go straight to zero.
+  } else { // go straight to zero.
     motorPosition = 1; // don't go quite to zero... prevents potential issue damaging the motor.
     motor1.setPosition(motorPosition);
     motor1.updateBlocking();
     currentMotorPosition = motorPosition; // reset target vs. current position.
   }
-  //Serial.print("satellites:");
+
+  /* Debug using Serial plotter *
   Serial.print(MPH);
-Serial.print(" "); 
+  Serial.print(" "); 
   Serial.println(gps.satellites.value());
-  if (gps.satellites.value() > 3) {
-    digitalWrite(led, HIGH);
+  /* *** */
+
+  /* Debug using Serial Monitor */
+  Serial.print("Motor Position:");
+  Serial.print(motorPosition);
+  Serial.print(" MPH:");
+  Serial.print(MPH);
+  Serial.print(" Satellites:"); 
+  Serial.println(gps.satellites.value());
+  /* *** */
+
+  /* Satellite indicator  
+   * TODO - add variable brightness depending on number of satellites
+   */
+  if (gps.satellites.value() > 3) { 
+    digitalWrite(LED, HIGH);
   } else {
-    digitalWrite(led, LOW);
+    digitalWrite(LED, LOW); // no satellites found
   }
 
   if (delayCounter <= 0) { // if delay counter is 0, update the motor position.
@@ -103,34 +94,15 @@ Serial.print(" ");
   delayCounter--;
 }
 
-void processGPS()
+// get information from GPS module
+void processGPS() 
 {
-  if (gps.location.isValid()){
-    MPH = gps.speed.mph();
-    /*Serial.println(MPH);
-    /*if (!fixFlag) { // if this is the first time we've had a fix, the update the position
-      oldLat = gps.location.lat();
-      oldLong = gps.location.lng();
-      //getMileage (); // re-read the EEPROM, just in case it was corrupted during cranking.
-      fixFlag = true;
-    } else {
-      if (MPH >= 3) { // MPH must be greater than 3 to update the odometer, this prevents jitter adding to the odo.
-        currentDistance = TinyGPSPlus::distanceBetween(gps.location.lat(), gps.location.lng(), oldLat, oldLong); // distance between current position and the last pposition
-        distanceMeters += currentDistance;
-        oldLat = gps.location.lat(); // set last position to current position
-        oldLong = gps.location.lng();
-      }*/
-    /*}
-    if (distanceMeters >= 1609.34) {  // 1609.34m in a mile
-      distanceMeters -= 1609.34; // subtract a mile
-      if (distanceMeters < 10)
-      { // this prevents a rare error which screws the mileage. (the error is the distance reported being from 0 deg lat, 0 deg long, which is fine if you're just off the coast of Africa...GPS still reports position valid, even though it isn't!))
-        //incrementMileage (); // add a mile to the odo.
-      }
-    }*/
+  if (gps.speed.isValid()){ // is there valid data to query
+    MPH = gps.speed.mph(); // get the latest speed
   }
 }
 
+// update the motor's position
 void updateMotor()
 {
   if (currentMotorPosition < motorPosition) {
@@ -142,6 +114,7 @@ void updateMotor()
   motorDifference = motorPosition - currentMotorPosition; // calculates the difference between the current and target position, and modifies the delay to suit.
   motorDifference = abs(motorDifference);
 
+  //vary the delay based on the change of motor position
   if (motorDifference > 40) {
     delayCounter = 0;
   } else if (motorDifference <= 40) {
@@ -154,6 +127,7 @@ void updateMotor()
     delayCounter = 600;
   } else if (motorDifference <= 6) {
     delayCounter = 1000;
-  }
+  } 
+  
   motor1.update();
 }
